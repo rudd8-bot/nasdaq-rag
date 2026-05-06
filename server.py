@@ -1,7 +1,7 @@
 """
 server.py
 나스닥 RAG 검색 서버 — Railway 배포용
-chroma_db 폴더가 있어도 컬렉션이 없으면 자동 재생성
+Volume 마운트 환경: 폴더 삭제 대신 컬렉션만 삭제 후 재생성
 """
 
 import os
@@ -35,7 +35,7 @@ def check_keys():
 
 
 def collection_exists():
-    """chroma_db 폴더가 있어도 컬렉션이 실제로 있는지 확인"""
+    """컬렉션이 실제로 존재하는지 확인"""
     try:
         import chromadb
         client = chromadb.PersistentClient(path=DB_FOLDER)
@@ -48,7 +48,6 @@ def collection_exists():
 def build_db():
     import openai
     import chromadb
-    import shutil
 
     print(f"\n📂 DB 생성 시작 (md_files → chroma_db)")
 
@@ -57,11 +56,6 @@ def build_db():
         print(f"❌ md_files 폴더에 .md 파일이 없어요.")
         sys.exit(1)
     print(f"✅ .md 파일 {len(md_files)}개 발견")
-
-    # 기존 DB 폴더 삭제 후 재생성
-    if os.path.exists(DB_FOLDER):
-        shutil.rmtree(DB_FOLDER)
-        print("🗑️ 기존 DB 삭제")
 
     documents, metadatas, ids = [], [], []
     for i, filepath in enumerate(md_files):
@@ -88,13 +82,21 @@ def build_db():
 
     print(f"✅ 총 {len(documents)}개 청크 준비")
 
-    client_openai = openai.OpenAI(api_key=OPENAI_KEY)
     chroma_client = chromadb.PersistentClient(path=DB_FOLDER)
+
+    # 폴더 삭제 대신 컬렉션만 삭제 (Volume 마운트 환경)
+    try:
+        chroma_client.delete_collection("nasdaq_docs")
+        print("🗑️ 기존 컬렉션 삭제")
+    except Exception:
+        pass
+
     collection = chroma_client.create_collection(
         name="nasdaq_docs",
         metadata={"hnsw:space": "cosine"}
     )
 
+    client_openai = openai.OpenAI(api_key=OPENAI_KEY)
     print(f"🔄 임베딩 변환 중... (총 {len(documents)}개)")
     start_time = time.time()
     success = 0
@@ -142,7 +144,6 @@ def init():
         print(f"❌ 라이브러리 없음: {e}")
         sys.exit(1)
 
-    # 핵심: 폴더 존재 여부가 아니라 컬렉션 존재 여부로 판단
     if collection_exists():
         print(f"✅ DB 확인 완료 (컬렉션 정상)")
     else:
