@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>나스닥 경제 검색</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Sans+KR:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg:       #0b0c0f;
+    --surface:  #13151a;
+    --surface2: #1a1d24;
+    --border:   #252830;
+    --accent:   #d4a843;
+    --accent2:  #7c9cf5;
+    --text:     #e8e9ed;
+    --text-dim: #6b6f7d;
+    --text-mid: #9ea3b3;
+    --success:  #4caf82;
+    --danger:   #e05a5a;
+    --radius:   12px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans KR', sans-serif;
+    min-height: 100vh;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  /* 배경 그래프 패턴 */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 50% at 20% 10%, rgba(212,168,67,0.04) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(124,156,245,0.04) 0%, transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 0 16px 80px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── 헤더 ── */
+  header {
+    padding: 40px 0 32px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 32px;
+  }
+
+  .logo {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(1.8rem, 5vw, 2.6rem);
+    color: var(--accent);
+    letter-spacing: -0.01em;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+
+  .logo span {
+    color: var(--text-dim);
+    font-style: italic;
+    font-size: 0.6em;
+  }
+
+  .tagline {
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.05em;
+  }
+
+  .doc-count {
+    display: inline-block;
+    background: rgba(212,168,67,0.1);
+    border: 1px solid rgba(212,168,67,0.2);
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-family: 'IBM Plex Mono', monospace;
+    padding: 2px 10px;
+    border-radius: 20px;
+    margin-top: 8px;
+  }
+
+  /* ── 검색 박스 ── */
+  .search-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 12px;
+    transition: border-color 0.2s;
+  }
+
+  .search-box:focus-within {
+    border-color: rgba(212,168,67,0.4);
+  }
+
+  textarea {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: 'IBM Plex Sans KR', sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    resize: none;
+    min-height: 72px;
+    caret-color: var(--accent);
+  }
+
+  textarea::placeholder { color: var(--text-dim); }
+
+  .search-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .hint {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .btn-search {
+    background: var(--accent);
+    color: #0b0c0f;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 24px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-family: 'IBM Plex Sans KR', sans-serif;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    white-space: nowrap;
+  }
+
+  .btn-search:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+  .btn-search:active:not(:disabled) { transform: translateY(0); }
+  .btn-search:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* 예시 질문 */
+  .examples {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 28px;
+  }
+
+  .ex-chip {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-mid);
+    font-size: 0.78rem;
+    padding: 5px 12px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+
+  .ex-chip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ── 상태 메시지 ── */
+  #status {
+    min-height: 24px;
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .status-loading { color: var(--accent2); }
+  .status-error   { color: var(--danger); }
+  .status-ok      { color: var(--success); }
+
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid rgba(124,156,245,0.2);
+    border-top-color: var(--accent2);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── 결과 영역 ── */
+  #result { display: none; }
+
+  .result-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 16px;
+    animation: fadeUp 0.3s ease both;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
+  }
+
+  .section-label {
+    font-size: 0.72rem;
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+
+  .badge {
+    font-size: 0.7rem;
+    font-family: 'IBM Plex Mono', monospace;
+    background: rgba(212,168,67,0.1);
+    color: var(--accent);
+    border: 1px solid rgba(212,168,67,0.2);
+    padding: 1px 8px;
+    border-radius: 10px;
+  }
+
+  /* 답변 */
+  .answer-body {
+    padding: 22px 20px;
+    color: var(--text);
+    line-height: 1.8;
+    font-size: 0.95rem;
+    white-space: pre-wrap;
+    word-break: keep-all;
+  }
+
+  /* 출처 카드 */
+  .sources-body { padding: 16px; }
+
+  .source-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .source-card:last-child { margin-bottom: 0; }
+
+  .source-card:hover { border-color: rgba(124,156,245,0.4); }
+
+  .source-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .source-name {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--accent2);
+    word-break: break-all;
+  }
+
+  .source-score {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .source-preview {
+    font-size: 0.82rem;
+    color: var(--text-mid);
+    line-height: 1.6;
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    white-space: pre-wrap;
+    word-break: keep-all;
+  }
+
+  .source-card.open .source-preview { display: block; }
+
+  .source-toggle {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  /* ── 서버 상태 표시 ── */
+  .server-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+  }
+
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  .dot.online  { background: var(--success); box-shadow: 0 0 6px var(--success); }
+  .dot.offline { background: var(--danger); }
+
+  /* ── 반응형 ── */
+  @media (max-width: 600px) {
+    header { padding: 28px 0 22px; }
+    .search-box { padding: 16px; }
+    .answer-body { font-size: 0.9rem; padding: 18px 16px; }
+    .sources-body { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo">NASDAQ RAG <span>검색 엔진</span></div>
+    <div class="tagline">경제 콘텐츠 의미 기반 검색</div>
+    <div class="doc-count">📄 1,370+ 문서</div>
+  </header>
+
+  <!-- 서버 상태 -->
+  <div class="server-status">
+    <div class="dot" id="dot"></div>
+    <span id="serverStatus">서버 연결 확인 중...</span>
+  </div>
+
+  <!-- 검색 박스 -->
+  <div class="search-box">
+    <textarea
+      id="queryInput"
+      placeholder="경제 관련 질문을 입력하세요&#10;예: 금리 인상이 나스닥에 미치는 영향은?"
+      rows="3"
+    ></textarea>
+    <div class="search-footer">
+      <span class="hint">Shift+Enter 줄바꿈 / Enter 검색</span>
+      <button class="btn-search" id="btnSearch" onclick="doSearch()">검색</button>
+    </div>
+  </div>
+
+  <!-- 예시 질문 -->
+  <div class="examples">
+    <div class="ex-chip" onclick="setQuery(this)">금리 인상 영향</div>
+    <div class="ex-chip" onclick="setQuery(this)">반도체 섹터 전망</div>
+    <div class="ex-chip" onclick="setQuery(this)">연준 통화정책</div>
+    <div class="ex-chip" onclick="setQuery(this)">빅테크 실적</div>
+    <div class="ex-chip" onclick="setQuery(this)">달러 환율 분석</div>
+  </div>
+
+  <!-- 상태 -->
+  <div id="status"></div>
+
+  <!-- 결과 -->
+  <div id="result">
+    <div class="result-section" id="answerSection">
+      <div class="section-header">
+        <span class="section-label">💬 답변</span>
+        <span class="badge" id="queryBadge"></span>
+      </div>
+      <div class="answer-body" id="answerBody"></div>
+    </div>
+
+    <div class="result-section" id="sourcesSection">
+      <div class="section-header">
+        <span class="section-label">📄 출처 문서</span>
+        <span class="badge" id="sourceCount"></span>
+      </div>
+      <div class="sources-body" id="sourcesBody"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const SERVER = "http://localhost:8765";
+  let isSearching = false;
+
+  // ── 서버 상태 확인 ──────────────────────
+  async function checkServer() {
+    try {
+      const res = await fetch(SERVER + "/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "__ping__" }),
+        signal: AbortSignal.timeout(3000)
+      });
+      // 응답이 오면 서버 온라인 (오류 응답도 연결된 것)
+      setServerStatus(true);
+    } catch {
+      setServerStatus(false);
+    }
+  }
+
+  function setServerStatus(online) {
+    const dot = document.getElementById("dot");
+    const txt = document.getElementById("serverStatus");
+    if (online) {
+      dot.className = "dot online";
+      txt.textContent = "서버 연결됨 — 검색 가능";
+    } else {
+      dot.className = "dot offline";
+      txt.innerHTML = '서버 오프라인 — <code style="color:#d4a843">python server.py</code> 를 먼저 실행해주세요';
+    }
+  }
+
+  // ── 검색 실행 ───────────────────────────
+  async function doSearch() {
+    if (isSearching) return;
+
+    const query = document.getElementById("queryInput").value.trim();
+    if (!query || query === "__ping__") {
+      setStatus("error", "질문을 입력해주세요.");
+      return;
+    }
+
+    isSearching = true;
+    const btn = document.getElementById("btnSearch");
+    btn.disabled = true;
+
+    setStatus("loading", "검색 중...");
+    document.getElementById("result").style.display = "none";
+
+    try {
+      const res = await fetch(SERVER + "/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+        signal: AbortSignal.timeout(60000)
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `서버 오류 (${res.status})`);
+      }
+
+      const data = await res.json();
+      renderResult(query, data);
+      setStatus("ok", `완료 — 출처 ${data.sources.length}개`);
+
+    } catch (e) {
+      if (e.name === "TimeoutError") {
+        setStatus("error", "응답 시간이 초과됐어요. 서버 상태를 확인해주세요.");
+      } else if (e.message.includes("Failed to fetch")) {
+        setStatus("error", "서버에 연결할 수 없어요. python server.py 가 실행 중인지 확인해주세요.");
+        setServerStatus(false);
+      } else {
+        setStatus("error", e.message);
+      }
+    } finally {
+      isSearching = false;
+      btn.disabled = false;
+    }
+  }
+
+  // ── 결과 렌더링 ─────────────────────────
+  function renderResult(query, data) {
+    // 답변
+    document.getElementById("queryBadge").textContent = query.length > 20 ? query.slice(0, 20) + "…" : query;
+    document.getElementById("answerBody").textContent = data.answer;
+
+    // 출처
+    document.getElementById("sourceCount").textContent = `${data.sources.length}개`;
+    const body = document.getElementById("sourcesBody");
+    body.innerHTML = "";
+
+    data.sources.forEach((s, i) => {
+      const card = document.createElement("div");
+      card.className = "source-card";
+      card.innerHTML = `
+        <div class="source-top">
+          <span class="source-name">📄 ${s.filename}</span>
+          <span class="source-score">유사도 ${(s.score * 100).toFixed(1)}%</span>
+        </div>
+        <div class="source-toggle">▸ 원문 미리보기</div>
+        <div class="source-preview">${escHtml(s.preview)}</div>
+      `;
+      card.addEventListener("click", () => {
+        card.classList.toggle("open");
+        card.querySelector(".source-toggle").textContent =
+          card.classList.contains("open") ? "▴ 닫기" : "▸ 원문 미리보기";
+      });
+      body.appendChild(card);
+    });
+
+    document.getElementById("result").style.display = "block";
+    document.getElementById("answerSection").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ── 유틸 ────────────────────────────────
+  function setStatus(type, msg) {
+    const el = document.getElementById("status");
+    if (type === "loading") {
+      el.innerHTML = `<span class="status-loading"><span class="spinner"></span>${msg}</span>`;
+    } else if (type === "error") {
+      el.innerHTML = `<span class="status-error">⚠️ ${msg}</span>`;
+    } else {
+      el.innerHTML = `<span class="status-ok">✅ ${msg}</span>`;
+    }
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  function setQuery(el) {
+    document.getElementById("queryInput").value = el.textContent;
+    document.getElementById("queryInput").focus();
+  }
+
+  // Enter 키 처리 (Shift+Enter = 줄바꿈)
+  document.getElementById("queryInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      doSearch();
+    }
+  });
+
+  // 초기 서버 상태 확인
+  checkServer();
+  setInterval(checkServer, 30000); // 30초마다 재확인
+</script>
+</body>
+</html>

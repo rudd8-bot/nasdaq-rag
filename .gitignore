@@ -1,0 +1,4 @@
+chroma_db/
+build_db.py
+__pycache__/
+*.pyc
