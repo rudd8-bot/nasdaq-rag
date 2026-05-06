@@ -9,6 +9,7 @@ import sys
 import json
 import glob
 import time
+import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -28,7 +29,6 @@ def check_keys():
     if not OPENAI_KEY or not OPENAI_KEY.startswith("sk-"):
         print("❌ OPENAI_KEY 환경변수가 없거나 올바르지 않아요.")
         sys.exit(1)
-    # CLAUDE_KEY는 요청에서 받으므로 없어도 경고만 출력
     if not CLAUDE_KEY:
         print("⚠️  CLAUDE_KEY 환경변수 없음 — 요청에서 claude_key를 받아서 사용합니다.")
     print("✅ API 키 확인 완료")
@@ -42,6 +42,31 @@ def collection_exists():
         return True
     except Exception:
         return False
+
+
+# ✅ 추가: MD 파일 상단 frontmatter에서 title, date, source 추출
+def parse_frontmatter(content):
+    title = ""
+    date  = ""
+    source = ""
+
+    match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+    if match:
+        fm = match.group(1)
+
+        t = re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', fm, re.MULTILINE)
+        if t:
+            title = t.group(1).strip().strip('"').strip("'")
+
+        d = re.search(r'^date:\s*(.+?)\s*$', fm, re.MULTILINE)
+        if d:
+            date = d.group(1).strip()
+
+        s = re.search(r'^source:\s*(.+?)\s*$', fm, re.MULTILINE)
+        if s:
+            source = s.group(1).strip()
+
+    return title, date, source
 
 
 def build_db():
@@ -63,18 +88,39 @@ def build_db():
                 content = f.read().strip()
             if not content:
                 continue
+
             filename = os.path.basename(filepath)
             rel_path = os.path.relpath(filepath, MD_FOLDER)
+
+            # ✅ frontmatter 파싱
+            title, date, source = parse_frontmatter(content)
+
             if len(content) > CHUNK_SIZE:
                 chunks = [content[j:j+CHUNK_SIZE] for j in range(0, len(content), CHUNK_SIZE)]
                 for k, chunk in enumerate(chunks):
                     if chunk.strip():
                         documents.append(chunk)
-                        metadatas.append({"filename": filename, "filepath": rel_path, "chunk": k, "preview": content[:200]})
+                        metadatas.append({
+                            "filename": filename,
+                            "filepath": rel_path,
+                            "chunk":    k,
+                            "preview":  content[:200],
+                            "title":    title,
+                            "date":     date,
+                            "source":   source,
+                        })
                         ids.append(f"{i}_{k}")
             else:
                 documents.append(content)
-                metadatas.append({"filename": filename, "filepath": rel_path, "chunk": 0, "preview": content[:200]})
+                metadatas.append({
+                    "filename": filename,
+                    "filepath": rel_path,
+                    "chunk":    0,
+                    "preview":  content[:200],
+                    "title":    title,
+                    "date":     date,
+                    "source":   source,
+                })
                 ids.append(f"{i}_0")
         except Exception as e:
             print(f"  ⚠️ 읽기 실패: {filepath} → {e}")
@@ -185,16 +231,17 @@ def search_docs(query):
             "filename": meta.get("filename", ""),
             "filepath": meta.get("filepath", ""),
             "preview":  meta.get("preview", doc[:200]),
-            "score":    round(1 - dist, 3)
+            "score":    round(1 - dist, 3),
+            "title":    meta.get("title", ""),
+            "date":     meta.get("date", ""),
+            "source":   meta.get("source", ""),
         })
     return docs
 
 
-# ✅ 수정: claude_key를 인자로 받아서 사용
 def generate_answer(query, docs, claude_key):
     import anthropic
 
-    # 요청에서 받은 키 우선, 없으면 환경변수 fallback
     key_to_use = claude_key if claude_key else CLAUDE_KEY
     if not key_to_use:
         raise ValueError("Claude API 키가 없어요. 화면에서 키를 입력해주세요.")
@@ -207,7 +254,8 @@ def generate_answer(query, docs, claude_key):
     system_prompt = """당신은 나스닥 경제 콘텐츠 전문 검색 어시스턴트입니다.
 제공된 출처 문서만을 기반으로 답변하세요.
 출처에 없는 내용은 추측하지 말고 "해당 내용은 수집된 콘텐츠에서 찾을 수 없습니다"라고 답변하세요.
-답변은 한국어로, 핵심을 먼저 말하고 근거를 설명하는 방식으로 작성하세요."""
+답변은 한국어로, 핵심을 먼저 말하고 근거를 설명하는 방식으로 작성하세요.
+마크다운 문법(##, **, - 등)을 사용해도 됩니다."""
 
     user_message = f"""질문: {query}
 
@@ -240,7 +288,6 @@ class RAGHandler(BaseHTTPRequestHandler):
         self.send_cors_headers()
         self.end_headers()
 
-    # ✅ 수정: / 와 /search_app.html 접속 시 HTML 반환
     def do_GET(self):
         path = urlparse(self.path).path
 
@@ -272,15 +319,12 @@ class RAGHandler(BaseHTTPRequestHandler):
                 body   = self.rfile.read(length)
                 data   = json.loads(body.decode("utf-8"))
                 query  = data.get("query", "").strip()
-
-                # ✅ 요청에서 claude_key 꺼내기
                 claude_key = data.get("claude_key", "").strip()
 
                 if not query:
                     self._send_error(400, "질문을 입력해주세요.")
                     return
 
-                # ✅ 키 유효성 검사
                 key_to_use = claude_key if claude_key else CLAUDE_KEY
                 if not key_to_use or not key_to_use.startswith("sk-ant-"):
                     self._send_error(400, "Claude API 키가 없거나 형식이 올바르지 않아요. 화면에서 키를 입력해주세요.")
@@ -297,7 +341,10 @@ class RAGHandler(BaseHTTPRequestHandler):
                             "filename": d["filename"],
                             "filepath": d["filepath"],
                             "preview":  d["preview"][:300],
-                            "score":    d["score"]
+                            "score":    d["score"],
+                            "title":    d["title"],
+                            "date":     d["date"],
+                            "source":   d["source"],
                         }
                         for d in docs
                     ]
