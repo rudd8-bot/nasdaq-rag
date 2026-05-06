@@ -1,7 +1,7 @@
 """
 server.py
 나스닥 RAG 검색 서버 — Railway 배포용
-Volume 마운트 환경: 폴더 삭제 대신 컬렉션만 삭제 후 재생성
+Volume 마운트 환경: chroma_db Volume에 영구 저장
 """
 
 import os
