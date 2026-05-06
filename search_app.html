@@ -749,9 +749,12 @@
     document.getElementById("queryBadge").textContent =
       query.length > 20 ? query.slice(0, 20) + "…" : query;
 
-    // ✅ 마크다운 렌더링
+    // ✅ 마크다운 렌더링 (<sup> 태그는 이스케이프 제외)
+    const escapedAnswer = escHtml(data.answer)
+      .replace(/&lt;sup&gt;/g, '<sup>')
+      .replace(/&lt;\/sup&gt;/g, '</sup>');
     document.getElementById("answerBody").innerHTML =
-      '<p>' + renderMarkdown(escHtml(data.answer)) + '</p>';
+      '<p>' + renderMarkdown(escapedAnswer) + '</p>';
 
     document.getElementById("sourceCount").textContent = `${data.sources.length}개`;
 
