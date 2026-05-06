@@ -188,7 +188,17 @@ def init():
         print(f"❌ 라이브러리 없음: {e}")
         sys.exit(1)
 
-    if collection_exists():
+    # ✅ FORCE_REBUILD=true 환경변수 있으면 DB 강제 재생성 (1회용)
+    force_rebuild = os.environ.get("FORCE_REBUILD", "").lower() == "true"
+
+    if force_rebuild:
+        print("🔄 FORCE_REBUILD 감지 → DB 강제 재생성 시작")
+        if not os.path.exists(MD_FOLDER):
+            print(f"❌ md_files 폴더가 없어요.")
+            sys.exit(1)
+        build_db()
+        print("✅ DB 재생성 완료 — Railway에서 FORCE_REBUILD 환경변수를 삭제해주세요!")
+    elif collection_exists():
         print(f"✅ DB 확인 완료 (컬렉션 정상)")
     else:
         print("⚠️ 컬렉션 없음 → DB 새로 생성")
