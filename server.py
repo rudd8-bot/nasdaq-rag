@@ -1,55 +1,142 @@
 """
 server.py
 나스닥 RAG 검색 서버 — Railway 배포용
-환경변수로 API 키 관리 (코드에 키를 직접 입력하지 않음)
+서버 시작 시 chroma_db 없으면 자동으로 임베딩 생성
 """
 
 import os
 import sys
 import json
+import glob
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 # ─────────────────────────────────────────
 # 환경변수에서 설정 읽기 (Railway 대시보드에서 입력)
 OPENAI_KEY  = os.environ.get("OPENAI_KEY", "")
 CLAUDE_KEY  = os.environ.get("CLAUDE_KEY", "")
 DB_FOLDER   = os.environ.get("DB_FOLDER", "chroma_db")
-PORT        = int(os.environ.get("PORT", 8765))   # Railway가 자동으로 포트 배정
+MD_FOLDER   = os.environ.get("MD_FOLDER", "md_files")
+PORT        = int(os.environ.get("PORT", 8765))
 TOP_K       = 5
+CHUNK_SIZE  = 1000
+BATCH_SIZE  = 50
 # ─────────────────────────────────────────
 
 
-def check_requirements():
-    """서버 시작 전 필수 항목 점검"""
-    ok = True
-
+def check_keys():
     if not OPENAI_KEY or not OPENAI_KEY.startswith("sk-"):
         print("❌ OPENAI_KEY 환경변수가 없거나 올바르지 않아요.")
-        ok = False
-
+        sys.exit(1)
     if not CLAUDE_KEY or not CLAUDE_KEY.startswith("sk-ant-"):
         print("❌ CLAUDE_KEY 환경변수가 없거나 올바르지 않아요.")
-        ok = False
+        sys.exit(1)
+    print("✅ API 키 확인 완료")
 
-    if not os.path.exists(DB_FOLDER):
-        print(f"❌ DB 폴더 '{DB_FOLDER}' 가 없어요. chroma_db 폴더가 업로드됐는지 확인하세요.")
-        ok = False
 
+def build_db():
+    import openai
+    import chromadb
+
+    print(f"\n📂 DB 폴더 없음 → 자동 생성 시작")
+
+    md_files = glob.glob(os.path.join(MD_FOLDER, "**", "*.md"), recursive=True)
+    if not md_files:
+        print(f"❌ md_files 폴더에 .md 파일이 없어요.")
+        sys.exit(1)
+    print(f"✅ .md 파일 {len(md_files)}개 발견")
+
+    documents, metadatas, ids = [], [], []
+    for i, filepath in enumerate(md_files):
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().strip()
+            if not content:
+                continue
+            filename = os.path.basename(filepath)
+            rel_path = os.path.relpath(filepath, MD_FOLDER)
+            if len(content) > CHUNK_SIZE:
+                chunks = [content[j:j+CHUNK_SIZE] for j in range(0, len(content), CHUNK_SIZE)]
+                for k, chunk in enumerate(chunks):
+                    if chunk.strip():
+                        documents.append(chunk)
+                        metadatas.append({"filename": filename, "filepath": rel_path, "chunk": k, "preview": content[:200]})
+                        ids.append(f"{i}_{k}")
+            else:
+                documents.append(content)
+                metadatas.append({"filename": filename, "filepath": rel_path, "chunk": 0, "preview": content[:200]})
+                ids.append(f"{i}_0")
+        except Exception as e:
+            print(f"  ⚠️ 읽기 실패: {filepath} → {e}")
+
+    print(f"✅ 총 {len(documents)}개 청크 준비")
+
+    client_openai = openai.OpenAI(api_key=OPENAI_KEY)
+    chroma_client = chromadb.PersistentClient(path=DB_FOLDER)
+    collection = chroma_client.create_collection(
+        name="nasdaq_docs",
+        metadata={"hnsw:space": "cosine"}
+    )
+
+    print(f"🔄 임베딩 변환 중... (총 {len(documents)}개)")
+    start_time = time.time()
+    success = 0
+
+    for batch_start in range(0, len(documents), BATCH_SIZE):
+        batch_docs = documents[batch_start:batch_start+BATCH_SIZE]
+        batch_meta = metadatas[batch_start:batch_start+BATCH_SIZE]
+        batch_ids  = ids[batch_start:batch_start+BATCH_SIZE]
+
+        valid = [(d, m, i) for d, m, i in zip(batch_docs, batch_meta, batch_ids) if d.strip()]
+        if not valid:
+            continue
+        v_docs, v_meta, v_ids = zip(*valid)
+
+        try:
+            response = client_openai.embeddings.create(
+                input=list(v_docs),
+                model="text-embedding-3-small"
+            )
+            embeddings = [item.embedding for item in response.data]
+            collection.add(
+                documents=list(v_docs),
+                embeddings=embeddings,
+                metadatas=list(v_meta),
+                ids=list(v_ids)
+            )
+            success += len(v_docs)
+            pct = min(100, int((batch_start + BATCH_SIZE) / len(documents) * 100))
+            print(f"  진행: {pct}% ({success}/{len(documents)})")
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"  ⚠️ 배치 오류: {e}")
+            time.sleep(2)
+
+    elapsed = time.time() - start_time
+    print(f"✅ 임베딩 완료! {success}개 / {elapsed:.0f}초")
+
+
+def init():
+    check_keys()
     try:
         import openai, chromadb, anthropic
     except ImportError as e:
         print(f"❌ 라이브러리 없음: {e}")
-        ok = False
-
-    if not ok:
         sys.exit(1)
 
-    print("✅ 모든 설정 확인 완료")
+    if not os.path.exists(DB_FOLDER):
+        if not os.path.exists(MD_FOLDER):
+            print(f"❌ md_files 폴더가 없어요.")
+            sys.exit(1)
+        build_db()
+    else:
+        print(f"✅ DB 폴더 확인: {DB_FOLDER}")
+
+    print("✅ 초기화 완료\n")
 
 
 def search_docs(query):
-    """쿼리 → 임베딩 → ChromaDB 유사도 검색"""
     import openai
     import chromadb
 
@@ -86,11 +173,9 @@ def search_docs(query):
 
 
 def generate_answer(query, docs):
-    """검색된 문서 → Claude API → 답변 생성"""
     import anthropic
 
     client = anthropic.Anthropic(api_key=CLAUDE_KEY)
-
     context = ""
     for i, doc in enumerate(docs):
         context += f"\n[출처 {i+1}: {doc['filename']}]\n{doc['content']}\n"
@@ -113,14 +198,13 @@ def generate_answer(query, docs):
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}]
     )
-
     return response.content[0].text
 
 
 class RAGHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        pass  # 기본 로그 억제
+        pass
 
     def send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -128,13 +212,11 @@ class RAGHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def do_OPTIONS(self):
-        """CORS preflight 처리"""
         self.send_response(200)
         self.send_cors_headers()
         self.end_headers()
 
     def do_GET(self):
-        """health check — Railway가 서버 살아있는지 확인용"""
         parsed = urlparse(self.path)
         if parsed.path == "/health":
             self._send_json(200, {"status": "ok"})
@@ -143,7 +225,6 @@ class RAGHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-
         if parsed.path == "/search":
             try:
                 length = int(self.headers.get("Content-Length", 0))
@@ -156,7 +237,6 @@ class RAGHandler(BaseHTTPRequestHandler):
                     return
 
                 print(f"🔍 검색: {query}")
-
                 docs   = search_docs(query)
                 answer = generate_answer(query, docs)
 
@@ -172,7 +252,6 @@ class RAGHandler(BaseHTTPRequestHandler):
                         for d in docs
                     ]
                 }
-
                 self._send_json(200, result)
                 print(f"✅ 답변 완료 (출처 {len(docs)}개)")
 
@@ -198,11 +277,10 @@ class RAGHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    check_requirements()
-    # Railway 배포: 0.0.0.0 으로 바인딩해야 외부 접속 가능
+    init()
     server = HTTPServer(("0.0.0.0", PORT), RAGHandler)
-    print(f"\n{'='*50}")
-    print(f"  🚀 RAG 서버 실행 중 (Railway 배포용)")
+    print(f"{'='*50}")
+    print(f"  🚀 RAG 서버 실행 중")
     print(f"{'='*50}")
     print(f"  포트: {PORT}")
     print(f"  DB:   {os.path.abspath(DB_FOLDER)}")
