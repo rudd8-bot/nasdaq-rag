@@ -69,6 +69,128 @@ def parse_frontmatter(content):
     return title, date, source
 
 
+def get_indexed_filenames():
+    """DB에 이미 저장된 파일명 목록 반환"""
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=DB_FOLDER)
+        collection = client.get_collection("nasdaq_docs")
+        result = collection.get(include=["metadatas"])
+        return set(m["filename"] for m in result["metadatas"])
+    except Exception:
+        return set()
+
+
+def build_incremental():
+    """새 md 파일만 임베딩해서 기존 DB에 추가"""
+    import openai
+    import chromadb
+
+    md_files = glob.glob(os.path.join(MD_FOLDER, "**", "*.md"), recursive=True)
+    if not md_files:
+        print("❌ md_files 폴더에 .md 파일이 없어요.")
+        return
+
+    indexed = get_indexed_filenames()
+    new_files = [f for f in md_files if os.path.basename(f) not in indexed]
+
+    if not new_files:
+        print(f"✅ 새 파일 없음 — 증분 업데이트 건너뜀 ({len(indexed)}개 기존 파일)")
+        return
+
+    print(f"🔄 증분 업데이트: {len(new_files)}개 새 파일 발견 (기존 {len(indexed)}개)")
+
+    chroma_client = chromadb.PersistentClient(path=DB_FOLDER)
+    collection = chroma_client.get_collection("nasdaq_docs")
+
+    existing = collection.get(include=[])
+    base_idx = len(existing["ids"]) if existing["ids"] else 0
+
+    documents, metadatas, ids = [], [], []
+    for i, filepath in enumerate(new_files):
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().strip()
+            if not content:
+                continue
+
+            filename = os.path.basename(filepath)
+            rel_path = os.path.relpath(filepath, MD_FOLDER)
+            title, date, source = parse_frontmatter(content)
+
+            if len(content) > CHUNK_SIZE:
+                chunks = [content[j:j+CHUNK_SIZE] for j in range(0, len(content), CHUNK_SIZE)]
+                for k, chunk in enumerate(chunks):
+                    if chunk.strip():
+                        documents.append(chunk)
+                        metadatas.append({
+                            "filename": filename,
+                            "filepath": rel_path,
+                            "chunk":    k,
+                            "preview":  content[:200],
+                            "title":    title,
+                            "date":     date,
+                            "source":   source,
+                        })
+                        ids.append(f"inc_{base_idx + i}_{k}")
+            else:
+                documents.append(content)
+                metadatas.append({
+                    "filename": filename,
+                    "filepath": rel_path,
+                    "chunk":    0,
+                    "preview":  content[:200],
+                    "title":    title,
+                    "date":     date,
+                    "source":   source,
+                })
+                ids.append(f"inc_{base_idx + i}_0")
+        except Exception as e:
+            print(f"  ⚠️ 읽기 실패: {filepath} → {e}")
+
+    if not documents:
+        print("⚠️ 추가할 유효한 청크 없음")
+        return
+
+    print(f"✅ {len(documents)}개 청크 증분 임베딩 시작")
+    client_openai = openai.OpenAI(api_key=OPENAI_KEY)
+    start_time = time.time()
+    success = 0
+
+    for batch_start in range(0, len(documents), BATCH_SIZE):
+        batch_docs = documents[batch_start:batch_start+BATCH_SIZE]
+        batch_meta = metadatas[batch_start:batch_start+BATCH_SIZE]
+        batch_ids  = ids[batch_start:batch_start+BATCH_SIZE]
+
+        valid = [(d, m, i) for d, m, i in zip(batch_docs, batch_meta, batch_ids) if d.strip()]
+        if not valid:
+            continue
+        v_docs, v_meta, v_ids = zip(*valid)
+
+        try:
+            response = client_openai.embeddings.create(
+                input=list(v_docs),
+                model="text-embedding-3-small"
+            )
+            embeddings = [item.embedding for item in response.data]
+            collection.add(
+                documents=list(v_docs),
+                embeddings=embeddings,
+                metadatas=list(v_meta),
+                ids=list(v_ids)
+            )
+            success += len(v_docs)
+            pct = min(100, int((batch_start + BATCH_SIZE) / len(documents) * 100))
+            print(f"  진행: {pct}% ({success}/{len(documents)})")
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"  ⚠️ 배치 오류: {e}")
+            time.sleep(2)
+
+    elapsed = time.time() - start_time
+    print(f"✅ 증분 임베딩 완료! {success}개 추가 / {elapsed:.0f}초")
+
+
 def build_db():
     import openai
     import chromadb
@@ -199,7 +321,9 @@ def init():
         build_db()
         print("✅ DB 재생성 완료 — Railway에서 FORCE_REBUILD 환경변수를 삭제해주세요!")
     elif collection_exists():
-        print(f"✅ DB 확인 완료 (컬렉션 정상)")
+        print(f"✅ DB 확인 완료 (컬렉션 정상) — 증분 업데이트 확인 중")
+        build_incremental()
+
     else:
         print("⚠️ 컬렉션 없음 → DB 새로 생성")
         if not os.path.exists(MD_FOLDER):
