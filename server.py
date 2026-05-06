@@ -1,7 +1,7 @@
 """
 server.py
 나스닥 RAG 검색 서버 — Railway 배포용
-서버 시작 시 chroma_db 없으면 자동으로 임베딩 생성
+chroma_db 폴더가 있어도 컬렉션이 없으면 자동 재생성
 """
 
 import os
@@ -13,7 +13,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 # ─────────────────────────────────────────
-# 환경변수에서 설정 읽기 (Railway 대시보드에서 입력)
 OPENAI_KEY  = os.environ.get("OPENAI_KEY", "")
 CLAUDE_KEY  = os.environ.get("CLAUDE_KEY", "")
 DB_FOLDER   = os.environ.get("DB_FOLDER", "chroma_db")
@@ -35,17 +34,34 @@ def check_keys():
     print("✅ API 키 확인 완료")
 
 
+def collection_exists():
+    """chroma_db 폴더가 있어도 컬렉션이 실제로 있는지 확인"""
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=DB_FOLDER)
+        client.get_collection("nasdaq_docs")
+        return True
+    except Exception:
+        return False
+
+
 def build_db():
     import openai
     import chromadb
+    import shutil
 
-    print(f"\n📂 DB 폴더 없음 → 자동 생성 시작")
+    print(f"\n📂 DB 생성 시작 (md_files → chroma_db)")
 
     md_files = glob.glob(os.path.join(MD_FOLDER, "**", "*.md"), recursive=True)
     if not md_files:
         print(f"❌ md_files 폴더에 .md 파일이 없어요.")
         sys.exit(1)
     print(f"✅ .md 파일 {len(md_files)}개 발견")
+
+    # 기존 DB 폴더 삭제 후 재생성
+    if os.path.exists(DB_FOLDER):
+        shutil.rmtree(DB_FOLDER)
+        print("🗑️ 기존 DB 삭제")
 
     documents, metadatas, ids = [], [], []
     for i, filepath in enumerate(md_files):
@@ -119,19 +135,22 @@ def build_db():
 
 def init():
     check_keys()
+
     try:
         import openai, chromadb, anthropic
     except ImportError as e:
         print(f"❌ 라이브러리 없음: {e}")
         sys.exit(1)
 
-    if not os.path.exists(DB_FOLDER):
+    # 핵심: 폴더 존재 여부가 아니라 컬렉션 존재 여부로 판단
+    if collection_exists():
+        print(f"✅ DB 확인 완료 (컬렉션 정상)")
+    else:
+        print("⚠️ 컬렉션 없음 → DB 새로 생성")
         if not os.path.exists(MD_FOLDER):
             print(f"❌ md_files 폴더가 없어요.")
             sys.exit(1)
         build_db()
-    else:
-        print(f"✅ DB 폴더 확인: {DB_FOLDER}")
 
     print("✅ 초기화 완료\n")
 
@@ -217,15 +236,13 @@ class RAGHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/health":
+        if urlparse(self.path).path == "/health":
             self._send_json(200, {"status": "ok"})
         else:
             self._send_error(404, "경로를 찾을 수 없어요.")
 
     def do_POST(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/search":
+        if urlparse(self.path).path == "/search":
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 body   = self.rfile.read(length)
