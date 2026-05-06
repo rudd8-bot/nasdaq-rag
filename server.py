@@ -236,11 +236,36 @@ class RAGHandler(BaseHTTPRequestHandler):
         self.send_cors_headers()
         self.end_headers()
 
+    # ───────────────────────────────────────────────────────────
+    # ✅ 수정된 부분: HTML 파일 서빙 추가
+    # ───────────────────────────────────────────────────────────
     def do_GET(self):
-        if urlparse(self.path).path == "/health":
+        path = urlparse(self.path).path
+
+        # /health 체크는 그대로 유지
+        if path == "/health":
             self._send_json(200, {"status": "ok"})
-        else:
-            self._send_error(404, "경로를 찾을 수 없어요.")
+            return
+
+        # / 또는 /search_app.html 접속 시 HTML 파일 반환
+        if path == "/" or path == "/search_app.html":
+            html_path = os.path.join(os.path.dirname(__file__), "search_app.html")
+            if os.path.exists(html_path):
+                with open(html_path, "r", encoding="utf-8") as f:
+                    html_content = f.read().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", len(html_content))
+                self.send_cors_headers()
+                self.end_headers()
+                self.wfile.write(html_content)
+            else:
+                self._send_error(404, "search_app.html 파일을 찾을 수 없어요.")
+            return
+
+        # 그 외 경로는 404
+        self._send_error(404, "경로를 찾을 수 없어요.")
+    # ───────────────────────────────────────────────────────────
 
     def do_POST(self):
         if urlparse(self.path).path == "/search":
