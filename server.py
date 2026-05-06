@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 # ─────────────────────────────────────────
 OPENAI_KEY  = os.environ.get("OPENAI_KEY", "")
-CLAUDE_KEY  = os.environ.get("CLAUDE_KEY", "")
+CLAUDE_KEY  = os.environ.get("CLAUDE_KEY", "")   # fallback용 (없어도 됨)
 DB_FOLDER   = os.environ.get("DB_FOLDER", "chroma_db")
 MD_FOLDER   = os.environ.get("MD_FOLDER", "md_files")
 PORT        = int(os.environ.get("PORT", 8765))
@@ -28,14 +28,13 @@ def check_keys():
     if not OPENAI_KEY or not OPENAI_KEY.startswith("sk-"):
         print("❌ OPENAI_KEY 환경변수가 없거나 올바르지 않아요.")
         sys.exit(1)
-    if not CLAUDE_KEY or not CLAUDE_KEY.startswith("sk-ant-"):
-        print("❌ CLAUDE_KEY 환경변수가 없거나 올바르지 않아요.")
-        sys.exit(1)
+    # CLAUDE_KEY는 요청에서 받으므로 없어도 경고만 출력
+    if not CLAUDE_KEY:
+        print("⚠️  CLAUDE_KEY 환경변수 없음 — 요청에서 claude_key를 받아서 사용합니다.")
     print("✅ API 키 확인 완료")
 
 
 def collection_exists():
-    """컬렉션이 실제로 존재하는지 확인"""
     try:
         import chromadb
         client = chromadb.PersistentClient(path=DB_FOLDER)
@@ -84,7 +83,6 @@ def build_db():
 
     chroma_client = chromadb.PersistentClient(path=DB_FOLDER)
 
-    # 폴더 삭제 대신 컬렉션만 삭제 (Volume 마운트 환경)
     try:
         chroma_client.delete_collection("nasdaq_docs")
         print("🗑️ 기존 컬렉션 삭제")
@@ -192,10 +190,16 @@ def search_docs(query):
     return docs
 
 
-def generate_answer(query, docs):
+# ✅ 수정: claude_key를 인자로 받아서 사용
+def generate_answer(query, docs, claude_key):
     import anthropic
 
-    client = anthropic.Anthropic(api_key=CLAUDE_KEY)
+    # 요청에서 받은 키 우선, 없으면 환경변수 fallback
+    key_to_use = claude_key if claude_key else CLAUDE_KEY
+    if not key_to_use:
+        raise ValueError("Claude API 키가 없어요. 화면에서 키를 입력해주세요.")
+
+    client = anthropic.Anthropic(api_key=key_to_use)
     context = ""
     for i, doc in enumerate(docs):
         context += f"\n[출처 {i+1}: {doc['filename']}]\n{doc['content']}\n"
@@ -236,18 +240,14 @@ class RAGHandler(BaseHTTPRequestHandler):
         self.send_cors_headers()
         self.end_headers()
 
-    # ───────────────────────────────────────────────────────────
-    # ✅ 수정된 부분: HTML 파일 서빙 추가
-    # ───────────────────────────────────────────────────────────
+    # ✅ 수정: / 와 /search_app.html 접속 시 HTML 반환
     def do_GET(self):
         path = urlparse(self.path).path
 
-        # /health 체크는 그대로 유지
         if path == "/health":
             self._send_json(200, {"status": "ok"})
             return
 
-        # / 또는 /search_app.html 접속 시 HTML 파일 반환
         if path == "/" or path == "/search_app.html":
             html_path = os.path.join(os.path.dirname(__file__), "search_app.html")
             if os.path.exists(html_path):
@@ -263,9 +263,7 @@ class RAGHandler(BaseHTTPRequestHandler):
                 self._send_error(404, "search_app.html 파일을 찾을 수 없어요.")
             return
 
-        # 그 외 경로는 404
         self._send_error(404, "경로를 찾을 수 없어요.")
-    # ───────────────────────────────────────────────────────────
 
     def do_POST(self):
         if urlparse(self.path).path == "/search":
@@ -275,13 +273,22 @@ class RAGHandler(BaseHTTPRequestHandler):
                 data   = json.loads(body.decode("utf-8"))
                 query  = data.get("query", "").strip()
 
+                # ✅ 요청에서 claude_key 꺼내기
+                claude_key = data.get("claude_key", "").strip()
+
                 if not query:
                     self._send_error(400, "질문을 입력해주세요.")
                     return
 
+                # ✅ 키 유효성 검사
+                key_to_use = claude_key if claude_key else CLAUDE_KEY
+                if not key_to_use or not key_to_use.startswith("sk-ant-"):
+                    self._send_error(400, "Claude API 키가 없거나 형식이 올바르지 않아요. 화면에서 키를 입력해주세요.")
+                    return
+
                 print(f"🔍 검색: {query}")
                 docs   = search_docs(query)
-                answer = generate_answer(query, docs)
+                answer = generate_answer(query, docs, claude_key)
 
                 result = {
                     "answer": answer,

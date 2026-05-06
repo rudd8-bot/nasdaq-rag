@@ -35,7 +35,6 @@
     line-height: 1.65;
   }
 
-  /* 배경 그래프 패턴 */
   body::before {
     content: '';
     position: fixed;
@@ -93,6 +92,98 @@
     font-family: 'IBM Plex Mono', monospace;
     padding: 2px 10px;
     border-radius: 20px;
+    margin-top: 8px;
+  }
+
+  /* ── API 키 입력 영역 ── */
+  .api-key-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    transition: border-color 0.2s;
+  }
+
+  .api-key-box.active {
+    border-color: rgba(76,175,130,0.4);
+  }
+
+  .api-key-label {
+    font-size: 0.75rem;
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .api-key-label .key-status {
+    font-size: 0.7rem;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: rgba(224,90,90,0.12);
+    color: var(--danger);
+    border: 1px solid rgba(224,90,90,0.2);
+  }
+
+  .api-key-label .key-status.set {
+    background: rgba(76,175,130,0.12);
+    color: var(--success);
+    border-color: rgba(76,175,130,0.2);
+  }
+
+  .api-key-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .api-key-input {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 14px;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.82rem;
+    outline: none;
+    transition: border-color 0.2s;
+    letter-spacing: 0.03em;
+  }
+
+  .api-key-input::placeholder { color: var(--text-dim); }
+
+  .api-key-input:focus {
+    border-color: rgba(212,168,67,0.4);
+  }
+
+  .btn-key {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 16px;
+    color: var(--text-mid);
+    font-size: 0.8rem;
+    font-family: 'IBM Plex Sans KR', sans-serif;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+
+  .btn-key:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .api-key-hint {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    font-family: 'IBM Plex Mono', monospace;
     margin-top: 8px;
   }
 
@@ -253,7 +344,6 @@
     border-radius: 10px;
   }
 
-  /* 답변 */
   .answer-body {
     padding: 22px 20px;
     color: var(--text);
@@ -263,7 +353,6 @@
     word-break: keep-all;
   }
 
-  /* 출처 카드 */
   .sources-body { padding: 16px; }
 
   .source-card {
@@ -277,7 +366,6 @@
   }
 
   .source-card:last-child { margin-bottom: 0; }
-
   .source-card:hover { border-color: rgba(124,156,245,0.4); }
 
   .source-top {
@@ -323,7 +411,6 @@
     font-family: 'IBM Plex Mono', monospace;
   }
 
-  /* ── 서버 상태 표시 ── */
   .server-status {
     display: flex;
     align-items: center;
@@ -344,12 +431,13 @@
   .dot.online  { background: var(--success); box-shadow: 0 0 6px var(--success); }
   .dot.offline { background: var(--danger); }
 
-  /* ── 반응형 ── */
   @media (max-width: 600px) {
     header { padding: 28px 0 22px; }
     .search-box { padding: 16px; }
     .answer-body { font-size: 0.9rem; padding: 18px 16px; }
     .sources-body { padding: 12px; }
+    .api-key-row { flex-direction: column; align-items: stretch; }
+    .btn-key { text-align: center; }
   }
 </style>
 </head>
@@ -366,6 +454,27 @@
   <div class="server-status">
     <div class="dot" id="dot"></div>
     <span id="serverStatus">서버 연결 확인 중...</span>
+  </div>
+
+  <!-- ✅ 추가: Claude API 키 입력 영역 -->
+  <div class="api-key-box" id="apiKeyBox">
+    <div class="api-key-label">
+      🔑 Claude API Key
+      <span class="key-status" id="keyStatus">미입력</span>
+    </div>
+    <div class="api-key-row">
+      <input
+        type="password"
+        class="api-key-input"
+        id="apiKeyInput"
+        placeholder="sk-ant-api03-..."
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button class="btn-key" onclick="saveKey()">저장</button>
+      <button class="btn-key" onclick="clearKey()">지우기</button>
+    </div>
+    <div class="api-key-hint">🔒 키는 이 브라우저 세션에만 저장됩니다. 새로고침하면 사라져요.</div>
   </div>
 
   <!-- 검색 박스 -->
@@ -418,17 +527,52 @@
   const SERVER = "https://web-production-66dbe.up.railway.app";
   let isSearching = false;
 
-  // ── 서버 상태 확인 ──────────────────────
+  // ── API 키 관리 ─────────────────────────────────────
+  // 세션 변수에만 저장 (새로고침하면 사라짐)
+  let claudeKey = "";
+
+  function saveKey() {
+    const input = document.getElementById("apiKeyInput").value.trim();
+    if (!input) {
+      alert("키를 입력해주세요.");
+      return;
+    }
+    if (!input.startsWith("sk-ant-")) {
+      alert("Claude API 키는 sk-ant- 로 시작해야 해요.");
+      return;
+    }
+    claudeKey = input;
+    document.getElementById("apiKeyInput").value = ""; // 입력창 비우기
+    updateKeyStatus(true);
+  }
+
+  function clearKey() {
+    claudeKey = "";
+    document.getElementById("apiKeyInput").value = "";
+    updateKeyStatus(false);
+  }
+
+  function updateKeyStatus(isSet) {
+    const statusEl = document.getElementById("keyStatus");
+    const boxEl = document.getElementById("apiKeyBox");
+    if (isSet) {
+      statusEl.textContent = "저장됨 ✓";
+      statusEl.className = "key-status set";
+      boxEl.classList.add("active");
+    } else {
+      statusEl.textContent = "미입력";
+      statusEl.className = "key-status";
+      boxEl.classList.remove("active");
+    }
+  }
+
+  // ── 서버 상태 확인 ──────────────────────────────────
   async function checkServer() {
     try {
-      const res = await fetch(SERVER + "/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: "__ping__" }),
+      const res = await fetch(SERVER + "/health", {
         signal: AbortSignal.timeout(3000)
       });
-      // 응답이 오면 서버 온라인 (오류 응답도 연결된 것)
-      setServerStatus(true);
+      setServerStatus(res.ok);
     } catch {
       setServerStatus(false);
     }
@@ -442,16 +586,23 @@
       txt.textContent = "서버 연결됨 — 검색 가능";
     } else {
       dot.className = "dot offline";
-      txt.innerHTML = '서버 오프라인 — <code style="color:#d4a843">python server.py</code> 를 먼저 실행해주세요';
+      txt.textContent = "서버 오프라인";
     }
   }
 
-  // ── 검색 실행 ───────────────────────────
+  // ── 검색 실행 ────────────────────────────────────────
   async function doSearch() {
     if (isSearching) return;
 
+    // API 키 확인
+    if (!claudeKey) {
+      setStatus("error", "Claude API 키를 먼저 입력하고 저장해주세요.");
+      document.getElementById("apiKeyInput").focus();
+      return;
+    }
+
     const query = document.getElementById("queryInput").value.trim();
-    if (!query || query === "__ping__") {
+    if (!query) {
       setStatus("error", "질문을 입력해주세요.");
       return;
     }
@@ -467,7 +618,8 @@
       const res = await fetch(SERVER + "/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        // ✅ claude_key도 같이 전송
+        body: JSON.stringify({ query, claude_key: claudeKey }),
         signal: AbortSignal.timeout(60000)
       });
 
@@ -482,9 +634,9 @@
 
     } catch (e) {
       if (e.name === "TimeoutError") {
-        setStatus("error", "응답 시간이 초과됐어요. 서버 상태를 확인해주세요.");
+        setStatus("error", "응답 시간이 초과됐어요.");
       } else if (e.message.includes("Failed to fetch")) {
-        setStatus("error", "서버에 연결할 수 없어요. python server.py 가 실행 중인지 확인해주세요.");
+        setStatus("error", "서버에 연결할 수 없어요.");
         setServerStatus(false);
       } else {
         setStatus("error", e.message);
@@ -495,18 +647,16 @@
     }
   }
 
-  // ── 결과 렌더링 ─────────────────────────
+  // ── 결과 렌더링 ──────────────────────────────────────
   function renderResult(query, data) {
-    // 답변
     document.getElementById("queryBadge").textContent = query.length > 20 ? query.slice(0, 20) + "…" : query;
     document.getElementById("answerBody").textContent = data.answer;
-
-    // 출처
     document.getElementById("sourceCount").textContent = `${data.sources.length}개`;
+
     const body = document.getElementById("sourcesBody");
     body.innerHTML = "";
 
-    data.sources.forEach((s, i) => {
+    data.sources.forEach((s) => {
       const card = document.createElement("div");
       card.className = "source-card";
       card.innerHTML = `
@@ -529,7 +679,7 @@
     document.getElementById("answerSection").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // ── 유틸 ────────────────────────────────
+  // ── 유틸 ─────────────────────────────────────────────
   function setStatus(type, msg) {
     const el = document.getElementById("status");
     if (type === "loading") {
@@ -550,7 +700,6 @@
     document.getElementById("queryInput").focus();
   }
 
-  // Enter 키 처리 (Shift+Enter = 줄바꿈)
   document.getElementById("queryInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -558,9 +707,13 @@
     }
   });
 
-  // 초기 서버 상태 확인
+  // Enter 키로 API 키 저장
+  document.getElementById("apiKeyInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") saveKey();
+  });
+
   checkServer();
-  setInterval(checkServer, 30000); // 30초마다 재확인
+  setInterval(checkServer, 30000);
 </script>
 </body>
 </html>
